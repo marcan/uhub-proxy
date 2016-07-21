@@ -119,6 +119,7 @@ struct Proxy {
     pause_listener: bool,
     sid_map: HashMap<Vec<u8>, Token>,
     cmd_queue: Vec<Vec<u8>>,
+    disconnect_queue: Vec<Token>,
     clients_stalled: bool,
 }
 
@@ -136,6 +137,7 @@ impl Proxy {
             pause_listener: false,
             sid_map: HashMap::new(),
             cmd_queue: Vec::new(),
+            disconnect_queue: Vec::new(),
             clients_stalled: false,
         }
     }
@@ -254,6 +256,12 @@ impl Proxy {
         info!("[{:?}] Client connection {} is established as sid {:?}",
             token, addr, std::str::from_utf8(args));
 
+        if let Some(&oldtoken) = self.sid_map.get(&args.to_vec()) {
+            error!("[{:?}] New SID {:?} already registered to token {:?}, killing old client",
+            token, std::str::from_utf8(args), oldtoken);
+            self.sid_map.remove(&args.to_vec());
+            self.disconnect_queue.push(oldtoken);
+        }
         self.sid_map.insert(args.to_vec(), token);
 
         event_loop.register(
@@ -265,17 +273,23 @@ impl Proxy {
         self.reregister_listener(event_loop);
     }
 
-    fn msg_client_disconnect(&mut self, event_loop: &mut mio::EventLoop<Proxy>, args: &[u8]) {
+    fn msg_client_disconnect(&mut self, _: &mut mio::EventLoop<Proxy>, args: &[u8]) {
         if let Some(&token) = self.sid_map.get(&args.to_vec()) {
-            self.connections[token].close(event_loop);
+            info!("[{:?}] Queuing disconection for {:?}", token, std::str::from_utf8(args));
             self.sid_map.remove(&args.to_vec());
-            self.connections.remove(token);
-            self.reregister_listener(event_loop);
-            self.pause_listener = false;
-            self.reregister_hub(event_loop);
+            self.disconnect_queue.push(token);
         } else {
             error!("Unknown SID disconnect request: {:?}", std::str::from_utf8(args));
         }
+    }
+
+    fn process_client_disconnect(&mut self, event_loop: &mut mio::EventLoop<Proxy>, token: Token) {
+        info!("[{:?}] Processing disconection", token);
+        self.connections[token].close(event_loop);
+        self.connections.remove(token);
+        self.reregister_listener(event_loop);
+        self.pause_listener = false;
+        self.reregister_hub(event_loop);
     }
 
     fn msg_unicast(&mut self, event_loop: &mut mio::EventLoop<Proxy>, args: &[u8]) {
@@ -341,7 +355,12 @@ impl mio::Handler for Proxy {
     type Message = ();
 
     fn ready(&mut self, event_loop: &mut mio::EventLoop<Proxy>, token: Token, events: EventSet) {
-        debug!("socket is ready; token={:?}; events={:?}", token, events);
+        //debug!("socket is ready; token={:?}; events={:?}", token, events);
+
+        if self.state == ProxyState::Idle {
+            error!("Spurious events ignored: token={:?}; events={:?}", token, events);
+            return;
+        }
 
         match token {
             LISTENER => {
@@ -378,7 +397,6 @@ impl mio::Handler for Proxy {
                     error!("[HUB] Upstream connection failed. Retrying...");
                     self.cleanup(event_loop);
                     sleep(Duration::from_secs(1));
-                    self.connect(event_loop);
                     return;
                 }
                 match self.state {
@@ -396,15 +414,13 @@ impl mio::Handler for Proxy {
                         if events.is_readable() {
                             match self.hub.as_mut().unwrap().pull_data() {
                                 Ok(Some(0)) => {
-                                    error!("[HUB] Upstream connection closed. Reconnecting...");
+                                    error!("[HUB] Upstream connection closed. Disconnecting...");
                                     self.cleanup(event_loop);
-                                    self.connect(event_loop);
                                     return;
                                 }
                                 Err(e) => {
-                                    error!("[HUB] Upstream read failed with error {}. Reconnecting...", e);
+                                    error!("[HUB] Upstream read failed with error {}. Disconnecting...", e);
                                     self.cleanup(event_loop);
-                                    self.connect(event_loop);
                                     return;
                                 }
                                 _ => {}
@@ -415,9 +431,8 @@ impl mio::Handler for Proxy {
                         }
                         if events.is_writable() {
                             if let Err(e) = self.hub.as_mut().unwrap().push_data() {
-                                error!("[HUB] Upstream write failed with error {}. Reconnecting...", e);
+                                error!("[HUB] Upstream write failed with error {}. Disconnecting...", e);
                                 self.cleanup(event_loop);
-                                self.connect(event_loop);
                                 return;
                             }
                             self.send_commands();
@@ -440,6 +455,10 @@ impl mio::Handler for Proxy {
                 }
             }
             _ => {
+                if self.connections.get(token).is_none() {
+                    error!("[{:?}] Unknown token, ignoring!", token);
+                    return;
+                }
                 self.connections[token].ready(event_loop, events, self.hub.as_mut().unwrap());
                 if self.connections[token].closed {
                     let sid = self.connections[token].sid.clone();
@@ -452,6 +471,18 @@ impl mio::Handler for Proxy {
             }
         }
     }
+
+    fn tick(&mut self, event_loop: &mut mio::EventLoop<Proxy>) {
+        if self.state == ProxyState::Idle {
+            error!("[HUB] Event processing complete and proxy is idle, reconnecting...");
+            self.connect(event_loop);
+        }
+        let queue = mem::replace(&mut self.disconnect_queue, Vec::new());
+        for token in queue.iter().cloned() {
+            self.process_client_disconnect(event_loop, token);
+        }
+    }
+
 }
 
 struct Connection {
