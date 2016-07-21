@@ -4,6 +4,7 @@ extern crate bytes;
 extern crate log;
 extern crate env_logger;
 extern crate getopts;
+extern crate net2;
 
 use std::mem;
 use std::net::SocketAddr;
@@ -18,6 +19,9 @@ use mio::tcp::*;
 use mio::util::Slab;
 use bytes::{Buf, MutBuf, RingBuf};
 use getopts::Options;
+
+use net2::TcpBuilder;
+use net2::unix::UnixTcpBuilderExt;
 
 const LISTENER: Token = Token(0);
 const HUB: Token = Token(1);
@@ -571,10 +575,19 @@ impl Connection {
 }
 
 pub fn start(address: SocketAddr, upstream: SocketAddr) {
-    let listener = TcpListener::bind(&address).unwrap();
+    let sock = (match address {
+            SocketAddr::V4(..) => TcpBuilder::new_v4(),
+            SocketAddr::V6(..) => TcpBuilder::new_v6(),
+    }).unwrap();
+
+    sock.reuse_address(true).unwrap();
+    sock.reuse_port(true).unwrap();
+    sock.bind(address).unwrap();
+
+    let listener = TcpListener::from_listener(sock.listen(1024).unwrap(), &address).unwrap();
+    //let listener = TcpListener::bind(&address).unwrap();
 
     let mut event_loop = mio::EventLoop::new().unwrap();
-
     // Register the listener but do not poll for events until we are
     // connected upstream.
     event_loop.register(&listener, LISTENER, EventSet::none(),
