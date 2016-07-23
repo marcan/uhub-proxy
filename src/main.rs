@@ -316,11 +316,11 @@ impl Proxy {
             if {
                 let conn = &mut self.connections[token];
                 if conn.closed {
-                    error!("[{:?}] Client is already closed", conn.token);
+                    //error!("[{:?}] Client is already closed", conn.token);
                     return;
                 } 
                 if conn.stream.write(msg).is_err() {
-                    error!("[{:?}] Client fell behind, killing it", conn.token);
+                    error!("[{:?}] Client fell behind (UC), killing it", conn.token);
                     conn.close(event_loop);
                     true
                 } else {
@@ -343,7 +343,7 @@ impl Proxy {
                 continue
             }
             if conn.stream.write(args).is_err() {
-                error!("[{:?}] Client fell behind, killing it", conn.token);
+                error!("[{:?}] Client fell behind (BC), killing it", conn.token);
                 dead_clients.push(conn.sid.clone());
                 conn.close(event_loop);
             }
@@ -599,6 +599,8 @@ pub fn start(address: SocketAddr, upstream: SocketAddr) {
     
     let mut proxy = Proxy::new(listener, upstream);
     proxy.connect(&mut event_loop);
+
+    info!("Starting event loop...");
     event_loop.run(&mut proxy).unwrap();
 }
 
