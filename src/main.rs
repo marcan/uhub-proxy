@@ -31,8 +31,8 @@ const LISTENER: Token = Token(0);
 const HUB: Token = Token(1);
 
 const MAX_CLIENTS: usize = 8192;
-const WRITE_BUFFER: usize = 65536;
-const READ_BUFFER: usize = 16384; // Max line/command length
+const WRITE_BUFFER: usize = 1048576;
+const READ_BUFFER: usize = 65536; // Max line/command length
 
 struct LineStream {
     stream: TcpStream,
