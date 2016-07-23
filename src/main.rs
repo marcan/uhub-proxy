@@ -3,6 +3,7 @@ extern crate bytes;
 #[macro_use]
 extern crate log;
 extern crate env_logger;
+extern crate time;
 extern crate getopts;
 extern crate net2;
 
@@ -22,6 +23,9 @@ use getopts::Options;
 
 use net2::TcpBuilder;
 use net2::unix::UnixTcpBuilderExt;
+
+use log::{LogRecord, LogLevelFilter};
+use env_logger::LogBuilder;
 
 const LISTENER: Token = Token(0);
 const HUB: Token = Token(1);
@@ -604,8 +608,28 @@ fn print_usage(program: &str, opts: Options) {
 }
 
 pub fn main() {
-    env_logger::init().unwrap();
+    let formatter = |record: &LogRecord| {
+        let t = time::now();
+        format!("{},{:03} - {} - {}",
+            time::strftime("%Y-%m-%d %H:%M:%S", &t).unwrap(),
+            t.tm_nsec / 1000_000,
+            record.level(),
+            record.args()
+        )
+    };
+/*    
+    let formatter = |record: &LogRecord| {
+        format!("{} - {}", record.level(), record.args())
+    };*/
 
+    let mut builder = LogBuilder::new();
+    builder.format(formatter).filter(None, LogLevelFilter::Info);
+
+    if env::var("RUST_LOG").is_ok() {
+       builder.parse(&env::var("RUST_LOG").unwrap());
+    }
+    builder.init().unwrap();
+    
     let args: Vec<String> = env::args().collect();
     let program = args[0].clone();
 
